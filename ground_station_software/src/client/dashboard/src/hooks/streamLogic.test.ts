@@ -4,6 +4,8 @@ import {
   BACKOFF_CAP_MS,
   backoffDelay,
   INITIAL_GAP_STATE,
+  lossPercent,
+  messageRate,
   nextGapState,
   readSince,
   wsUrl,
@@ -84,5 +86,42 @@ describe('wsUrl', () => {
   it('uses ws for http and wss for https', () => {
     expect(wsUrl({ protocol: 'http:', host: 'localhost:5173' })).toBe('ws://localhost:5173/ws')
     expect(wsUrl({ protocol: 'https:', host: 'gs.example:443' })).toBe('wss://gs.example:443/ws')
+  })
+})
+
+describe('lossPercent', () => {
+  it('is 0 when nothing has been received', () => {
+    expect(lossPercent(0, 0)).toBe(0)
+  })
+
+  it('is 100 when only gaps have been seen', () => {
+    expect(lossPercent(0, 5)).toBe(100)
+  })
+
+  it('is gaps / (received + gaps)', () => {
+    expect(lossPercent(90, 10)).toBe(10)
+    expect(lossPercent(100, 0)).toBe(0)
+  })
+})
+
+describe('messageRate', () => {
+  it('is 0 with no timestamps', () => {
+    expect(messageRate([], 1000, 2000)).toBe(0)
+  })
+
+  it('counts timestamps in the window per second', () => {
+    // 20 receipts 100 ms apart ending at now: 10 msgs/s over a 2 s window.
+    const now = 10_000
+    const times = Array.from({ length: 20 }, (_, i) => now - i * 100)
+    expect(messageRate(times, now, 2000)).toBe(10)
+  })
+
+  it('excludes timestamps older than the window', () => {
+    expect(messageRate([1000, 2000, 9000, 9500], 10_000, 2000)).toBe(1)
+  })
+
+  it('treats the window start as exclusive', () => {
+    // 8000 is exactly now - windowMs: excluded. 8001 is inside.
+    expect(messageRate([8000, 8001], 10_000, 2000)).toBe(0.5)
   })
 })

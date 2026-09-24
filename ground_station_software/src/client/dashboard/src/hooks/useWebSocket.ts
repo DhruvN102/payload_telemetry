@@ -3,6 +3,7 @@ import { parseMessage, type TelemetryMessage } from '../contract'
 import {
   backoffDelay,
   INITIAL_GAP_STATE,
+  messageRate,
   nextGapState,
   readSince,
   wsUrl,
@@ -13,16 +14,20 @@ import {
 export type ConnectionStatus = 'connecting' | 'open' | 'reconnecting'
 
 // Valid messages retained for getMessagesSince; oldest dropped beyond this.
-const HISTORY_LIMIT = 2000
+export const HISTORY_LIMIT = 2000
+
+// Sliding window for the displayed message rate.
+const RATE_WINDOW_MS = 2000
 
 interface Snapshot {
   latest: TelemetryMessage | null
   received: number
   invalid: number
   gaps: number
+  rate: number // valid msgs/s over RATE_WINDOW_MS
 }
 
-const EMPTY_SNAPSHOT: Snapshot = { latest: null, received: 0, invalid: 0, gaps: 0 }
+const EMPTY_SNAPSHOT: Snapshot = { latest: null, received: 0, invalid: 0, gaps: 0, rate: 0 }
 
 export interface WebSocketStream extends Snapshot {
   status: ConnectionStatus
@@ -42,6 +47,7 @@ export function useWebSocket(): WebSocketStream {
   const receivedRef = useRef(0) // monotonic; also the getMessagesSince cursor
   const invalidRef = useRef(0)
   const gapRef = useRef<GapState>(INITIAL_GAP_STATE)
+  const receiptTimesRef = useRef<number[]>([])
   const attemptRef = useRef(0)
   const dirtyRef = useRef(false)
 
@@ -51,11 +57,13 @@ export function useWebSocket(): WebSocketStream {
     let disposed = false
     let reconnectTimer: number | undefined
     let rafId = 0
+    let publishedRate = 0
 
     historyRef.current = []
     receivedRef.current = 0
     invalidRef.current = 0
     gapRef.current = INITIAL_GAP_STATE
+    receiptTimesRef.current = []
     attemptRef.current = 0
     dirtyRef.current = true
 
@@ -83,6 +91,13 @@ export function useWebSocket(): WebSocketStream {
           }
           receivedRef.current += 1
           gapRef.current = nextGapState(gapRef.current, msg.seq)
+
+          // Trimmed on push (not in flush) so this stays bounded even when
+          // rAF is paused in a background tab.
+          const now = performance.now()
+          const times = receiptTimesRef.current
+          times.push(now)
+          while (times[0] <= now - RATE_WINDOW_MS) times.shift()
         }
         dirtyRef.current = true
       }
@@ -101,13 +116,18 @@ export function useWebSocket(): WebSocketStream {
     }
 
     function flush() {
-      if (dirtyRef.current) {
+      // Recomputed every frame so the rate decays to 0 when messages stop;
+      // it only changes when a timestamp enters or leaves the window.
+      const rate = messageRate(receiptTimesRef.current, performance.now(), RATE_WINDOW_MS)
+      if (dirtyRef.current || rate !== publishedRate) {
         dirtyRef.current = false
+        publishedRate = rate
         setSnapshot({
           latest: historyRef.current.at(-1) ?? null,
           received: receivedRef.current,
           invalid: invalidRef.current,
           gaps: gapRef.current.gaps,
+          rate,
         })
       }
       rafId = requestAnimationFrame(flush)

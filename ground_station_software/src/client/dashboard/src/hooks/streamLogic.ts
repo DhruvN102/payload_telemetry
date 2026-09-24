@@ -57,6 +57,25 @@ export function readSince<T>(history: readonly T[], total: number, cursor: numbe
   return { messages: history.slice(start - oldest), cursor: total }
 }
 
+/** Packet loss as a percentage: gaps / (received + gaps). 0 when nothing seen. */
+export function lossPercent(received: number, gaps: number): number {
+  const expected = received + gaps
+  return expected === 0 ? 0 : (gaps / expected) * 100
+}
+
+/**
+ * Messages per second from receipt timestamps (ms), counting those in the
+ * sliding window (now - windowMs, now].
+ */
+export function messageRate(receiptTimes: readonly number[], now: number, windowMs: number): number {
+  const cutoff = now - windowMs
+  let count = 0
+  for (const t of receiptTimes) {
+    if (t > cutoff && t <= now) count += 1
+  }
+  return count / (windowMs / 1000)
+}
+
 export function wsUrl(loc: Pick<Location, 'protocol' | 'host'>): string {
   return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`
 }
